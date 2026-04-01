@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Kathy studiert">
+  <meta name="application-name" content="Kathy studiert">
+  <title>Kathy studiert</title>
+  <!-- Icons injected by JS after canvas renders -->
+  <link id="fav16"  rel="icon" type="image/png" sizes="16x16">
+  <link id="fav32"  rel="icon" type="image/png" sizes="32x32">
+  <link id="fav180" rel="apple-touch-icon" sizes="180x180">
+  <link id="fav192" rel="icon" type="image/png" sizes="192x192">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      width: 100%; height: 100%;
+      background: #111;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      overflow: hidden;
+    }
+    body {
+      padding-top:    env(safe-area-inset-top);
+      padding-right:  env(safe-area-inset-right);
+      padding-bottom: env(safe-area-inset-bottom);
+      padding-left:   env(safe-area-inset-left);
+    }
+    #rotate-screen {
+      display: none; flex-direction: column; align-items: center;
+      justify-content: center; gap: 20px; width: 100%; height: 100%;
+    }
+    #rotate-screen p { font-size: 16px; color: #aaa; text-align: center; line-height: 1.6; }
+    #game-screen {
+      display: none; flex-direction: column; align-items: stretch;
+      width: 100%; height: 100%;
+    }
+    #ui {
+      flex-shrink: 0; display: flex; justify-content: space-between;
+      align-items: center; padding: 6px 14px;
+    }
+    #score-display { font-weight: 500; font-size: 15px; color: #fff; }
+    #hi-display    { font-size: 13px; color: #aaa; }
+    #mode-badge {
+      font-size: 11px; color: #f0c030;
+      background: rgba(240,192,48,0.15);
+      border: 0.5px solid rgba(240,192,48,0.4);
+      border-radius: 6px; padding: 2px 8px; display: none;
+    }
+    #canvasWrap {
+      flex: 1; display: flex; align-items: center;
+      justify-content: center; min-height: 0;
+    }
+    #gameCanvas { display: block; touch-action: none; }
+    @media (orientation: portrait)  { #rotate-screen{display:flex;} #game-screen{display:none!important;} }
+    @media (orientation: landscape) { #rotate-screen{display:none;} #game-screen{display:flex;} }
+  </style>
+</head>
+<body>
+
+<div id="rotate-screen">
+  <svg width="72" height="72" viewBox="0 0 64 64" fill="none">
+    <rect x="18" y="4" width="28" height="46" rx="5" stroke="#aaa" stroke-width="2.5"/>
+    <circle cx="32" cy="44" r="2.5" fill="#aaa"/>
+    <path d="M44 28 Q56 20 56 32 Q56 44 44 38" stroke="#aaa" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+    <path d="M50 24 L44 28 L48 34" stroke="#aaa" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>
+  <p>Bitte drehe dein Gerät,<br>um Kathy zu spielen!</p>
+</div>
+
+<div id="game-screen">
+  <div id="ui">
+    <span id="score-display">Punkte: 0</span>
+    <span id="hi-display">Best: 0</span>
+    <span id="mode-badge">🎭 Theaterwissenschaft</span>
+  </div>
+  <div id="canvasWrap">
+    <canvas id="gameCanvas"></canvas>
+  </div>
+</div>
+
+<script>
+// ── CANVAS + RETINA SETUP ──────────────────────────────────────────────────
+const canvas = document.getElementById('gameCanvas');
+const ctx    = canvas.getContext('2d');
+const LW = 620, LH = 240;          // logical (game) dimensions
+const dpr = window.devicePixelRatio || 1;
+
+function resizeCanvas() {
+  const wrap  = document.getElementById('canvasWrap');
+  const scale = Math.min(wrap.clientWidth / LW, wrap.clientHeight / LH);
+  canvas.style.width  = (LW * scale) + 'px';
+  canvas.style.height = (LH * scale) + 'px';
+  canvas.width  = Math.round(LW * dpr);
+  canvas.height = Math.round(LH * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+window.addEventListener('resize', resizeCanvas);
+window.addEventListener('orientationchange', () => setTimeout(resizeCanvas, 150));
+resizeCanvas();
+
+const W = LW, H = LH;
+const GROUND_Y    = H - 36;
+const GRAVITY     = 0.62;
+const JUMP_FORCE  = -13.5;
+const RESTART_DLY = 120;
+
+// ── GAME STATE ─────────────────────────────────────────────────────────────
+let state = 'idle';
+let score=0, hiScore=0, frame=0, speed=4.5;
+let deathFrame=0, flashAlpha=0;
+let kathyDead = {x:0,y:0,leg:0};
+let kathy = {x:80,y:GROUND_Y,vy:0,w:30,h:52,onGround:true,leg:0};
+let obstacles=[], nextObs=110, bgX=0;
+let clouds=[{x:80,y:22},{x:230,y:14},{x:390,y:28},{x:530,y:10}];
+
+let totalDeaths=0, easyMode=false;
+let congratsTimer=0, congratsText='';
+let confetti=[];
+let thesisSpawned={bach:false,master:false};
+let masterPassed=false, endingFrame=0;
+
+// ── ICON GENERATOR ────────────────────────────────────────────────────────
+// We render at 512×512 so it stays crisp at every size
+function makeIconCanvas(size) {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const g = c.getContext('2d');
+  const s = size / 200;           // scale factor relative to our 200-unit drawing
+
+  g.save();
+  // rounded rect clip
+  const r = 44 * s;
+  g.beginPath();
+  g.moveTo(r, 0); g.lineTo(size-r, 0);
+  g.arcTo(size,0, size,size, r);
+  g.lineTo(size, size-r);
+  g.arcTo(size,size, 0,size, r);
+  g.lineTo(r, size);
+  g.arcTo(0,size, 0,0, r);
+  g.lineTo(0, r);
+  g.arcTo(0,0, size,0, r);
+  g.closePath();
+  g.clip();
+
+  // sky
+  g.fillStyle='#1a3a6e'; g.fillRect(0,0,size,size);
+  // clouds
+  [[100,22,60,20],[48,16,32,14],[150,18,28,12]].forEach(([cx,cy,rx,ry])=>{
+    g.fillStyle=cx===100?'#c8dff0':cx===48?'#deedf8':'#e4f0f8';
+    g.beginPath(); g.ellipse(cx*s,cy*s,rx*s,ry*s,0,0,Math.PI*2); g.fill();
+  });
+  // building body
+  g.fillStyle='#c0aa8e'; g.fillRect(0,48*s,size,(200-48)*s);
+  g.fillStyle='#a08870'; g.fillRect(0,48*s,size,6*s);
+  // pillars
+  g.fillStyle='#b09878';
+  [10,36,62,88,114,140,166].forEach(x=>g.fillRect(x*s,54*s,6*s,78*s));
+  // windows row 1
+  [[16,64,'#7aabcc'],[42,64,'#ffeaa0'],[68,64,'#7aabcc'],[94,64,'#8ab8d8'],[120,64,'#ffeaa0'],[146,64,'#8ab8d8']].forEach(([x,y,col])=>{
+    g.fillStyle=col; g.fillRect(x*s,y*s,16*s,22*s);
+    g.strokeStyle='#c9b89e'; g.lineWidth=1.2*s;
+    g.beginPath(); g.moveTo((x+8)*s,y*s); g.lineTo((x+8)*s,(y+22)*s);
+    g.moveTo(x*s,(y+11)*s); g.lineTo((x+16)*s,(y+11)*s); g.stroke();
+  });
+  // windows row 2
+  [[16,96,'#8ab8d8'],[42,96,'#7aabcc'],[68,96,'#ffeaa0'],[94,96,'#7aabcc'],[120,96,'#8ab8d8'],[146,96,'#ffeaa0']].forEach(([x,y,col])=>{
+    g.fillStyle=col; g.fillRect(x*s,y*s,16*s,22*s);
+    g.strokeStyle='#c9b89e'; g.lineWidth=1.2*s;
+    g.beginPath(); g.moveTo((x+8)*s,y*s); g.lineTo((x+8)*s,(y+22)*s);
+    g.moveTo(x*s,(y+11)*s); g.lineTo((x+16)*s,(y+11)*s); g.stroke();
+  });
+  // arches
+  for(let i=0;i<4;i++){
+    const ax=(10+i*50)*s;
+    g.fillStyle='#a89880'; g.fillRect(ax,138*s,6*s,62*s);
+    g.fillStyle='#7a6a58'; g.fillRect(ax+6*s,148*s,38*s,52*s);
+    g.beginPath(); g.ellipse(ax+25*s,148*s,19*s,10*s,0,Math.PI,0); g.fill();
+  }
+  // ground
+  g.fillStyle='#9a8a78'; g.fillRect(0,132*s,size,68*s);
+  g.fillStyle='#b89a60'; g.fillRect(0,132*s,size,4*s);
+  // legs
+  g.fillStyle='#1e2e5a'; g.fillRect(79*s,128*s,10*s,22*s);
+  g.fillStyle='#111';    g.fillRect(77*s,148*s,14*s,5*s);
+  g.fillStyle='#2c3e6b'; g.fillRect(95*s,128*s,10*s,22*s);
+  g.fillStyle='#111';    g.fillRect(93*s,148*s,15*s,5*s);
+  // coat
+  g.fillStyle='#f0f0f0';
+  g.beginPath(); g.roundRect(77*s,86*s,30*s,44*s,3*s); g.fill();
+  g.fillStyle='#d8dce6'; g.fillRect(95*s,86*s,12*s,44*s);
+  g.fillStyle='#e4e8f0';
+  g.beginPath(); g.moveTo(77*s,86*s); g.lineTo(86*s,86*s); g.lineTo(83*s,108*s); g.lineTo(77*s,110*s); g.fill();
+  g.beginPath(); g.moveTo(107*s,86*s); g.lineTo(98*s,86*s); g.lineTo(98*s,108*s); g.lineTo(107*s,106*s); g.fill();
+  g.fillStyle='#5b9bd5'; g.fillRect(83*s,86*s,8*s,10*s);
+  // neck
+  g.fillStyle='#f5c98a'; g.fillRect(83*s,82*s,6*s,6*s);
+  // head
+  g.fillStyle='#f5c98a'; g.beginPath(); g.ellipse(93*s,71*s,11*s,12*s,0.1,0,Math.PI*2); g.fill();
+  g.fillStyle='#f0b87a'; g.beginPath(); g.ellipse(82*s,71*s,3.5*s,4.5*s,0,0,Math.PI*2); g.fill();
+  // eye
+  g.fillStyle='#2c1810'; g.beginPath(); g.ellipse(98*s,69*s,2.6*s,3*s,0,0,Math.PI*2); g.fill();
+  g.fillStyle='white'; g.beginPath(); g.arc(99*s,68*s,1.1*s,0,Math.PI*2); g.fill();
+  // eyebrow
+  g.strokeStyle='#b08050'; g.lineWidth=1.4*s;
+  g.beginPath(); g.moveTo(95*s,64*s); g.quadraticCurveTo(99*s,62*s,102*s,64*s); g.stroke();
+  // nose
+  g.fillStyle='#e8a870'; g.beginPath(); g.moveTo(102*s,71*s); g.lineTo(105*s,75*s); g.lineTo(102*s,76*s); g.fill();
+  // mouth
+  g.strokeStyle='#c07050'; g.lineWidth=1.2*s;
+  g.beginPath(); g.moveTo(100*s,78*s); g.quadraticCurveTo(103*s,80*s,101*s,82*s); g.stroke();
+  // hair
+  g.fillStyle='#f0c030'; g.beginPath(); g.ellipse(91*s,60*s,12*s,9*s,0.15,0,Math.PI*2); g.fill();
+  g.beginPath(); g.ellipse(99*s,61*s,6*s,7*s,-0.3,0,Math.PI*2); g.fill();
+  g.fillStyle='#e8b428';
+  g.beginPath(); g.moveTo(81*s,62*s); g.quadraticCurveTo(65*s,58*s,61*s,68*s);
+  g.quadraticCurveTo(63*s,76*s,71*s,73*s); g.quadraticCurveTo(75*s,69*s,78*s,64*s); g.fill();
+  // star clip
+  const scx=79*s, scy=64*s, sr=5*s;
+  g.fillStyle='#d0d0e8'; g.strokeStyle='#9898c0'; g.lineWidth=0.8*s;
+  g.beginPath();
+  for(let i=0;i<5;i++){
+    const oa=(i*4*Math.PI/5)-Math.PI/2, ia=oa+Math.PI/5;
+    if(i===0) g.moveTo(scx+Math.cos(oa)*sr, scy+Math.sin(oa)*sr);
+    else       g.lineTo(scx+Math.cos(oa)*sr, scy+Math.sin(oa)*sr);
+    g.lineTo(scx+Math.cos(ia)*sr*0.42, scy+Math.sin(ia)*sr*0.42);
+  }
+  g.closePath(); g.fill(); g.stroke();
+  g.fillStyle='rgba(255,255,255,0.6)';
+  g.beginPath(); g.arc(scx-0.5*s, scy-s, 1.2*s, 0, Math.PI*2); g.fill();
+
+  // subtle border
+  g.restore();
+  g.strokeStyle='rgba(255,255,255,0.14)'; g.lineWidth=2*s;
+  g.beginPath();
+  g.moveTo(r,0); g.lineTo(size-r,0); g.arcTo(size,0,size,size,r);
+  g.lineTo(size,size-r); g.arcTo(size,size,0,size,r);
+  g.lineTo(r,size); g.arcTo(0,size,0,0,r);
+  g.lineTo(0,r); g.arcTo(0,0,size,0,r); g.closePath();
+  g.stroke();
+  return c;
+}
+
+// Inject all icon sizes immediately
+(function injectIcons() {
+  const sizes = [{id:'fav16',sz:16},{id:'fav32',sz:32},{id:'fav180',sz:180},{id:'fav192',sz:192}];
+  sizes.forEach(({id,sz}) => {
+    document.getElementById(id).href = makeIconCanvas(sz).toDataURL('image/png');
+  });
+  // Also pre-build 200px version used for in-game overlay drawing
+  window._icon200 = makeIconCanvas(200);
+})();
+
+// ── BACKGROUND ────────────────────────────────────────────────────────────
+function drawBgTile(ox) {
+  ctx.fillStyle='#c9b89e'; ctx.fillRect(ox,52,W,GROUND_Y-52);
+  ctx.fillStyle='#b0a08a'; ctx.fillRect(ox,50,W,7);
+  const bayW=60, nb=Math.ceil(W/bayW)+2;
+  for(let i=0;i<nb;i++){
+    const bx=ox+i*bayW;
+    ctx.fillStyle='#b8a88e'; ctx.fillRect(bx,52,7,GROUND_Y-52);
+    [[bx+10,62,16,26],[bx+32,62,16,26],[bx+10,96,16,26],[bx+32,96,16,26]].forEach(([wx,wy,ww,wh])=>{
+      ctx.fillStyle='#8faabb'; ctx.fillRect(wx,wy,ww,wh);
+      ctx.fillStyle='#a09080'; ctx.fillRect(wx-1,wy+wh,ww+2,3);
+      ctx.fillStyle='#7a9aab'; ctx.beginPath(); ctx.ellipse(wx+ww/2,wy,ww/2,5,0,Math.PI,0); ctx.fill();
+      ctx.strokeStyle='#c9b89e'; ctx.lineWidth=1.2;
+      ctx.beginPath(); ctx.moveTo(wx+ww/2,wy); ctx.lineTo(wx+ww/2,wy+wh);
+      ctx.moveTo(wx,wy+wh/2); ctx.lineTo(wx+ww,wy+wh/2); ctx.stroke();
+    });
+  }
+  for(let i=0;i<nb;i++){
+    const ax=ox+i*bayW;
+    ctx.fillStyle='#a89880'; ctx.fillRect(ax,140,7,GROUND_Y-140);
+    ctx.fillStyle='#7a6a58'; ctx.fillRect(ax+7,150,44,GROUND_Y-150);
+    ctx.beginPath(); ctx.ellipse(ax+29,150,22,11,0,Math.PI,0); ctx.fill();
+  }
+  ctx.fillStyle='#9a8a78'; ctx.fillRect(ox,GROUND_Y,W,H-GROUND_Y);
+  ctx.strokeStyle='#887868'; ctx.lineWidth=0.7;
+  for(let i=0;i<11;i++){ctx.beginPath();ctx.moveTo(ox+i*62,GROUND_Y);ctx.lineTo(ox+i*62,H);ctx.stroke();}
+  ctx.beginPath(); ctx.moveTo(ox,GROUND_Y+16); ctx.lineTo(ox+W,GROUND_Y+16); ctx.stroke();
+  ctx.fillStyle='#b89a60'; ctx.fillRect(ox,GROUND_Y,W,4);
+}
+
+function drawBackground() {
+  const g=ctx.createLinearGradient(0,0,0,GROUND_Y);
+  g.addColorStop(0,easyMode?'#f0e8d0':'#b8d8f0');
+  g.addColorStop(1,easyMode?'#f8f0e0':'#dceefa');
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,GROUND_Y);
+  ctx.fillStyle='rgba(255,255,255,0.82)';
+  clouds.forEach(c=>{
+    ctx.beginPath();ctx.ellipse(c.x,c.y,24,10,0,0,Math.PI*2);ctx.fill();
+    ctx.beginPath();ctx.ellipse(c.x+14,c.y-5,17,9,0,0,Math.PI*2);ctx.fill();
+    ctx.beginPath();ctx.ellipse(c.x-13,c.y-3,14,8,0,0,Math.PI*2);ctx.fill();
+  });
+  const off=((bgX%W)+W)%W;
+  drawBgTile(-off); drawBgTile(W-off);
+}
+
+// ── STAR ──────────────────────────────────────────────────────────────────
+function drawStar(cx,cy,r){
+  ctx.save(); ctx.fillStyle='#c8c8dc'; ctx.strokeStyle='#9090b8'; ctx.lineWidth=0.8;
+  ctx.beginPath();
+  for(let i=0;i<5;i++){
+    const oa=(i*4*Math.PI/5)-Math.PI/2, ia=oa+Math.PI/5;
+    if(i===0) ctx.moveTo(cx+Math.cos(oa)*r,cy+Math.sin(oa)*r);
+    else       ctx.lineTo(cx+Math.cos(oa)*r,cy+Math.sin(oa)*r);
+    ctx.lineTo(cx+Math.cos(ia)*r*0.42,cy+Math.sin(ia)*r*0.42);
+  }
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.fillStyle='rgba(255,255,255,0.65)';
+  ctx.beginPath(); ctx.arc(cx-0.5,cy-1,1,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+
+// ── KATHY ─────────────────────────────────────────────────────────────────
+function drawKathy(x,feetY,legPhase,isDead,deathF){
+  ctx.save(); ctx.translate(x,feetY);
+  if(isDead) ctx.rotate(Math.min(deathF*0.065,Math.PI*0.55));
+  const lp=legPhase, THIGH=22;
+  const leg1=isDead?16:Math.sin(lp)*11;
+  const leg2=isDead?3:-Math.sin(lp)*11;
+  ctx.fillStyle='#1e2e5a'; ctx.fillRect(-7,-THIGH,11,THIGH+leg1);
+  ctx.fillStyle='#111827'; ctx.fillRect(-9,leg1,14,5);
+  ctx.fillStyle='#2c3e6b'; ctx.fillRect(2,-THIGH,11,THIGH+leg2);
+  ctx.fillStyle='#111827'; ctx.fillRect(0,leg2,15,5);
+  const bt=-THIGH-30, bb=-THIGH+6;
+  ctx.fillStyle='#f0f0f0'; ctx.beginPath(); ctx.roundRect(-13,bt,28,bb-bt,3); ctx.fill();
+  ctx.fillStyle='#d8dce6'; ctx.fillRect(5,bt,10,bb-bt);
+  ctx.fillStyle='#e4e8f0';
+  ctx.beginPath();ctx.moveTo(-13,bt);ctx.lineTo(-4,bt);ctx.lineTo(-7,bt+20);ctx.lineTo(-13,bt+22);ctx.fill();
+  ctx.beginPath();ctx.moveTo(15,bt);ctx.lineTo(6,bt);ctx.lineTo(6,bt+20);ctx.lineTo(15,bt+18);ctx.fill();
+  ctx.fillStyle='#5b9bd5'; ctx.fillRect(-3,bt,8,10);
+  ctx.strokeStyle='#b8bcc8'; ctx.lineWidth=1; ctx.strokeRect(-10,bt+10,8,9);
+  ctx.fillStyle='#a8b0c0';
+  for(let i=0;i<3;i++){ctx.beginPath();ctx.arc(0,bt+18+i*7,1.4,0,Math.PI*2);ctx.fill();}
+  const as=isDead?-22:Math.sin(lp-0.3)*9;
+  ctx.fillStyle='#e4e8f0';
+  ctx.save();ctx.translate(8,bt+8);ctx.rotate(as*Math.PI/180);
+  ctx.fillRect(-3,0,7,16);ctx.fillStyle='#f5c98a';ctx.beginPath();ctx.ellipse(0,17,4,3,0,0,Math.PI*2);ctx.fill();ctx.restore();
+  ctx.fillStyle='#d4d8e0';
+  ctx.save();ctx.translate(-7,bt+8);ctx.rotate(-as*Math.PI/180);ctx.fillRect(-4,0,7,14);ctx.restore();
+  const ny=bt-7; ctx.fillStyle='#f5c98a'; ctx.fillRect(-3,ny,6,7);
+  const hcy=ny-13;
+  ctx.fillStyle='#f5c98a'; ctx.beginPath(); ctx.ellipse(2,hcy,11,12,0.1,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#f0b87a'; ctx.beginPath(); ctx.ellipse(-7,hcy,3.5,4.5,0,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#2c1810'; ctx.beginPath(); ctx.ellipse(7,hcy-2,2.6,3,0,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='white'; ctx.beginPath(); ctx.arc(8,hcy-3,1.1,0,Math.PI*2); ctx.fill();
+  ctx.strokeStyle='#b08050'; ctx.lineWidth=1.4;
+  ctx.beginPath();ctx.moveTo(4,hcy-7);ctx.quadraticCurveTo(8,hcy-9,11,hcy-7);ctx.stroke();
+  ctx.fillStyle='#e8a870'; ctx.beginPath();ctx.moveTo(11,hcy-1);ctx.lineTo(14,hcy+3);ctx.lineTo(11,hcy+4);ctx.fill();
+  ctx.strokeStyle='#c07050'; ctx.lineWidth=1.1;
+  ctx.beginPath();ctx.moveTo(9,hcy+6);ctx.quadraticCurveTo(12,hcy+8,10,hcy+10);ctx.stroke();
+  const hry=hcy-10;
+  ctx.fillStyle='#f0c030'; ctx.beginPath();ctx.ellipse(-1,hry,12,9,0.15,0,Math.PI*2);ctx.fill();
+  ctx.beginPath();ctx.ellipse(7,hry,6,7,-0.3,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#e8b428';
+  ctx.beginPath();ctx.moveTo(-10,hry+2);ctx.quadraticCurveTo(-26,hry+5,-30,hry+16);
+  ctx.quadraticCurveTo(-28,hry+24,-20,hry+20);ctx.quadraticCurveTo(-16,hry+16,-12,hry+10);ctx.fill();
+  drawStar(-13,hry+3,4.5);
+  ctx.restore();
+}
+
+// ── OBSTACLES ─────────────────────────────────────────────────────────────
+function drawThesis(obs){
+  const {x,y,w,h,type}=obs, im=type==='master';
+  ctx.fillStyle='rgba(0,0,0,0.1)'; ctx.fillRect(x+3,y+3,w,h);
+  ctx.fillStyle=im?'#e8f4e8':'#e8eef8'; ctx.fillRect(x,y,w,h);
+  ctx.fillStyle=im?'#b0d8b0':'#b0c8e8';
+  ctx.beginPath();ctx.moveTo(x+w-10,y);ctx.lineTo(x+w,y+10);ctx.lineTo(x+w,y);ctx.fill();
+  ctx.strokeStyle=im?'#4a9a4a':'#4a6aaa'; ctx.lineWidth=1.5; ctx.strokeRect(x,y,w,h);
+  ctx.strokeStyle=im?'#80c080':'#80a0d0'; ctx.lineWidth=0.7;
+  for(let i=1;i<5;i++){ctx.beginPath();ctx.moveTo(x+4,y+h*i/5);ctx.lineTo(x+w-12,y+h*i/5);ctx.stroke();}
+  ctx.fillStyle=im?'#1a5a1a':'#1a3a7a'; ctx.font='bold 7px sans-serif'; ctx.textAlign='center';
+  ctx.fillText(im?'Master-':'Bachelor-',x+w/2,y+13);
+  ctx.fillText('arbeit',x+w/2,y+22);
+  ctx.fillText('★',x+w/2,y+34);
+  ctx.textAlign='left';
+}
+
+function drawExam(obs){
+  if(obs.type==='bach'||obs.type==='master'){drawThesis(obs);return;}
+  const {x,y,w,h}=obs;
+  ctx.fillStyle='rgba(0,0,0,0.08)'; ctx.fillRect(x+3,y+3,w,h);
+  ctx.fillStyle='#fffde7'; ctx.fillRect(x,y,w,h);
+  ctx.fillStyle='#f5e070'; ctx.beginPath();ctx.moveTo(x+w-8,y);ctx.lineTo(x+w,y+8);ctx.lineTo(x+w,y);ctx.fill();
+  ctx.strokeStyle='#e6c000'; ctx.lineWidth=1.5; ctx.strokeRect(x,y,w,h);
+  ctx.strokeStyle='#fbc02d'; ctx.lineWidth=0.8;
+  for(let i=1;i<5;i++){ctx.beginPath();ctx.moveTo(x+5,y+h*i/5);ctx.lineTo(x+w-8,y+h*i/5);ctx.stroke();}
+  ctx.fillStyle='#c0392b'; ctx.font='bold 12px sans-serif'; ctx.textAlign='center';
+  ctx.fillText('6!',x+w/2,y+15);
+  ctx.fillStyle='#795548'; ctx.font='7px sans-serif'; ctx.fillText('Chemie',x+w/2,y+h-4);
+  ctx.textAlign='left';
+}
+
+// ── CONFETTI ──────────────────────────────────────────────────────────────
+const CC=['#ff6b6b','#ffd060','#60d080','#60b0ff','#e060ff','#ff9030','#40e0d0'];
+function spawnConfetti(){
+  for(let i=0;i<90;i++) confetti.push({
+    x:Math.random()*W, y:-10-Math.random()*80,
+    vx:(Math.random()-0.5)*4, vy:1.5+Math.random()*3,
+    rot:Math.random()*Math.PI*2, rotV:(Math.random()-0.5)*0.18,
+    w:5+Math.random()*9, h:3+Math.random()*6,
+    color:CC[Math.floor(Math.random()*CC.length)], life:1
+  });
+}
+function updateConfetti(){ confetti.forEach(c=>{c.x+=c.vx;c.y+=c.vy;c.rot+=c.rotV;c.life-=0.007;}); confetti=confetti.filter(c=>c.life>0&&c.y<H+20); }
+function drawConfetti(){ confetti.forEach(c=>{ ctx.save();ctx.globalAlpha=Math.min(c.life,1);ctx.translate(c.x,c.y);ctx.rotate(c.rot);ctx.fillStyle=c.color;ctx.fillRect(-c.w/2,-c.h/2,c.w,c.h);ctx.restore(); }); ctx.globalAlpha=1; }
+
+// ── ICON SMALL (for in-game overlay) ──────────────────────────────────────
+function drawIconSmall(x,y,size){
+  const s=size/200;
+  ctx.save(); ctx.translate(x,y); ctx.scale(s,s);
+  ctx.beginPath(); ctx.roundRect(0,0,200,200,44); ctx.clip();
+  ctx.drawImage(window._icon200,0,0); // blit pre-rendered icon
+  ctx.restore();
+}
+
+// ── EASY BUTTON (logical coords) ──────────────────────────────────────────
+// Two lines of text → taller button
+// Line 1: "🎭 Zu schwer? Stattdessen"  Line 2: "Theaterwissenschaft studieren!"
+const EBTN = { x: W/2-138, y: H/2+76, w: 276, h: 38 };
+
+// ── SCREENS ───────────────────────────────────────────────────────────────
+function drawStartScreen(){
+  ctx.fillStyle='rgba(10,15,45,0.82)';
+  ctx.beginPath(); ctx.roundRect(W/2-170,H/2-92,340,184,14); ctx.fill();
+  const sz=52;
+  ctx.save(); ctx.beginPath(); ctx.roundRect(W/2-sz/2,H/2-86,sz,sz,12); ctx.clip();
+  drawIconSmall(W/2-sz/2,H/2-86,sz); ctx.restore();
+  ctx.strokeStyle='rgba(255,255,255,0.18)'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.roundRect(W/2-sz/2,H/2-86,sz,sz,12); ctx.stroke();
+  ctx.fillStyle='#fff'; ctx.font='500 17px sans-serif'; ctx.textAlign='center';
+  ctx.fillText('Du bist Kathy!',W/2,H/2-18);
+  ctx.fillStyle='#c9e8f5'; ctx.font='12px sans-serif';
+  ['Du willst dein Chemiestudium schaffen.',
+   'Doch die Klausuren stehen dir im Weg!',
+   'Springe über die Klausuren, um sie zu bestehen!'
+  ].forEach((l,i)=>ctx.fillText(l,W/2,H/2+4+i*18));
+  ctx.fillStyle='#ffd060'; ctx.font='500 14px sans-serif';
+  ctx.fillText('Tippen zum Starten',W/2,H/2+76);
+  ctx.textAlign='left';
+}
+
+function drawDeadScreen(){
+  const canRestart = deathFrame>=RESTART_DLY;
+  const progress   = Math.min(deathFrame/RESTART_DLY,1);
+  const showEasy   = totalDeaths>=3;
+  const boxH       = (showEasy&&canRestart) ? 214 : 168;
+
+  ctx.fillStyle='rgba(70,8,8,0.84)';
+  ctx.beginPath(); ctx.roundRect(W/2-155,H/2-82,310,boxH,14); ctx.fill();
+  ctx.fillStyle='#ff6b6b'; ctx.font='500 20px sans-serif'; ctx.textAlign='center';
+  ctx.fillText('Durchgefallen!',W/2,H/2-52);
+  ctx.fillStyle='#fff'; ctx.font='12px sans-serif';
+  ctx.fillText('Du bist durch eine Klausur gestolpert.',W/2,H/2-26);
+  ctx.fillText("Nicht schlimm — probier's nochmal!",W/2,H/2-8);
+  ctx.fillStyle='#ffd060'; ctx.font='500 15px sans-serif';
+  ctx.fillText('Punkte: '+score,W/2,H/2+18);
+  ctx.fillStyle='#c9e8f5'; ctx.font='13px sans-serif';
+  ctx.fillText('Highscore: '+hiScore,W/2,H/2+38);
+
+  if(!canRestart){
+    const bw=180,bh=6,bx=W/2-bw/2,by=H/2+56;
+    ctx.fillStyle='rgba(255,255,255,0.15)'; ctx.beginPath(); ctx.roundRect(bx,by,bw,bh,3); ctx.fill();
+    ctx.fillStyle='#ffd060'; ctx.beginPath(); ctx.roundRect(bx,by,bw*progress,bh,3); ctx.fill();
+  } else {
+    ctx.fillStyle='#ffd060'; ctx.font='500 13px sans-serif';
+    ctx.fillText('Tippen zum Neustarten',W/2,H/2+62);
+    if(showEasy){
+      // Button background
+      ctx.fillStyle='rgba(255,220,80,0.15)';
+      ctx.beginPath(); ctx.roundRect(EBTN.x,EBTN.y,EBTN.w,EBTN.h,8); ctx.fill();
+      ctx.strokeStyle='rgba(255,220,80,0.55)'; ctx.lineWidth=0.8;
+      ctx.beginPath(); ctx.roundRect(EBTN.x,EBTN.y,EBTN.w,EBTN.h,8); ctx.stroke();
+      // Two-line label, centred inside button
+      ctx.fillStyle='#ffd060'; ctx.font='11px sans-serif';
+      ctx.fillText('🎭 Zu schwer? Stattdessen',        W/2, EBTN.y+14);
+      ctx.fillText('Theaterwissenschaft studieren!',    W/2, EBTN.y+28);
+    }
+  }
+  ctx.textAlign='left';
+}
+
+function drawCongratsOverlay(){
+  const a=Math.min(congratsTimer/20,1)*Math.min((120-congratsTimer)/20,1);
+  if(a<=0) return;
+  ctx.globalAlpha=a;
+  ctx.fillStyle='rgba(10,50,10,0.85)';
+  ctx.beginPath(); ctx.roundRect(W/2-160,H/2-28,320,56,12); ctx.fill();
+  ctx.fillStyle='#ffd060'; ctx.font='500 17px sans-serif'; ctx.textAlign='center';
+  ctx.fillText(congratsText,W/2,H/2+8);
+  ctx.globalAlpha=1; ctx.textAlign='left';
+}
+
+function drawEndingScreen(){
+  const a=Math.min(endingFrame/40,1);
+  ctx.globalAlpha=a;
+  ctx.fillStyle='rgba(8,28,8,0.94)'; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#ffd060'; ctx.font='500 21px sans-serif'; ctx.textAlign='center';
+  ctx.fillText('🎓 Herzlichen Glückwunsch!',W/2,H/2-50);
+  ctx.fillStyle='#fff'; ctx.font='13px sans-serif';
+  ctx.fillText('Kathy hat ihr Theaterwissenschaftsstudium',W/2,H/2-22);
+  ctx.fillText('erfolgreich abgeschlossen!',W/2,H/2-4);
+  ctx.fillStyle='#c9e8f5'; ctx.font='12px sans-serif';
+  ctx.fillText('Master of Arts in Theaterwissenschaften',W/2,H/2+18);
+  ctx.fillStyle='#aaa'; ctx.font='11px sans-serif';
+  ctx.fillText('(Mit Auszeichnung)',W/2,H/2+36);
+  if(endingFrame>80){
+    ctx.fillStyle='rgba(255,208,96,0.13)';
+    ctx.beginPath(); ctx.roundRect(W/2-128,H/2+54,256,28,8); ctx.fill();
+    ctx.strokeStyle='rgba(255,208,96,0.45)'; ctx.lineWidth=0.8;
+    ctx.beginPath(); ctx.roundRect(W/2-128,H/2+54,256,28,8); ctx.stroke();
+    ctx.fillStyle='#ffd060'; ctx.font='500 12px sans-serif';
+    ctx.fillText('Doch lieber Chemie studieren? →',W/2,H/2+73);
+  }
+  ctx.globalAlpha=1; ctx.textAlign='left';
+}
+
+// ── INPUT ─────────────────────────────────────────────────────────────────
+function toLogical(clientX, clientY){
+  const r=canvas.getBoundingClientRect();
+  return { lx:(clientX-r.left)*(W/r.width), ly:(clientY-r.top)*(H/r.height) };
+}
+
+function handleTap(clientX, clientY){
+  const {lx,ly}=toLogical(clientX,clientY);
+
+  if(state==='ending'){ if(endingFrame>80) switchToChemie(); return; }
+  if(state==='idle'){   startGame(); return; }
+
+  if(state==='dead'){
+    if(deathFrame<RESTART_DLY) return;   // countdown still running
+    // Check easy-mode button first
+    if(totalDeaths>=3 && lx>=EBTN.x && lx<=EBTN.x+EBTN.w && ly>=EBTN.y && ly<=EBTN.y+EBTN.h){
+      activateEasyMode(); return;
+    }
+    startGame(); return;
+  }
+
+  if(state==='running' && kathy.onGround){ kathy.vy=JUMP_FORCE; kathy.onGround=false; }
+}
+
+canvas.addEventListener('click',   e=>handleTap(e.clientX,e.clientY));
+canvas.addEventListener('touchstart', e=>{ e.preventDefault(); handleTap(e.touches[0].clientX,e.touches[0].clientY); },{passive:false});
+
+// ── MODE HELPERS ──────────────────────────────────────────────────────────
+function activateEasyMode(){
+  easyMode=true; document.getElementById('mode-badge').style.display='inline';
+  thesisSpawned={bach:false,master:false}; masterPassed=false; startGame();
+}
+function switchToChemie(){
+  easyMode=false; document.getElementById('mode-badge').style.display='none';
+  thesisSpawned={bach:false,master:false}; masterPassed=false;
+  totalDeaths=0; confetti=[]; state='idle';
+}
+
+// ── GAME LOOP ─────────────────────────────────────────────────────────────
+function startGame(){
+  obstacles=[]; score=0; frame=0; speed=easyMode?3.2:4.5;
+  kathy.y=GROUND_Y; kathy.vy=0; kathy.onGround=true;
+  nextObs=easyMode?9999:110; deathFrame=0; flashAlpha=0; congratsTimer=0;
+  state='running';
+}
+
+function spawnObstacle(){ const h=30+Math.random()*32,w=22+Math.random()*18; obstacles.push({x:W+10,y:GROUND_Y-h,w,h,type:'exam'}); }
+function spawnThesis(t){ obstacles.push({x:W+10,y:GROUND_Y-40,w:32,h:40,type:t,passed:false}); }
+
+function checkCollision(k,o){ const m=5; return(k.x-k.w/2+m<o.x+o.w-m&&k.x+k.w/2-m>o.x+m&&k.y-k.h+m*2<o.y+o.h&&k.y-m>o.y); }
+function checkPassed(k,o){ return k.x-k.w/2>o.x+o.w+2; }
+
+function update(){
+  if(state==='running'){
+    bgX+=speed*0.55;
+    clouds.forEach(c=>{c.x-=0.22; if(c.x<-60)c.x=W+60;});
+    frame++; score=Math.floor(frame/6);
+
+    if(easyMode){
+      speed=Math.min(3.2+score*0.002,7);
+      if(score>=100&&!thesisSpawned.bach){thesisSpawned.bach=true;spawnThesis('bach');}
+      if(score>=200&&!thesisSpawned.master){thesisSpawned.master=true;spawnThesis('master');}
+    } else {
+      speed=Math.min(4.5+score*0.008,15);
+      if(--nextObs<=0){ spawnObstacle(); nextObs=Math.max(38,Math.floor(68+Math.random()*55-score*0.09)); }
+    }
+
+    kathy.vy+=GRAVITY; kathy.y+=kathy.vy;
+    if(kathy.y>=GROUND_Y){kathy.y=GROUND_Y;kathy.vy=0;kathy.onGround=true;}
+    kathy.leg+=kathy.onGround?0.24:0;
+    obstacles.forEach(o=>o.x-=speed);
+    obstacles=obstacles.filter(o=>o.x+o.w>-20);
+
+    for(const obs of obstacles){
+      if(obs.type==='exam'&&checkCollision(kathy,obs)){
+        state='dead'; totalDeaths++; if(score>hiScore)hiScore=score;
+        deathFrame=0; flashAlpha=1; kathyDead={x:kathy.x,y:kathy.y,leg:kathy.leg}; break;
+      }
+      if((obs.type==='bach'||obs.type==='master')&&!obs.passed&&checkPassed(kathy,obs)){
+        obs.passed=true;
+        if(obs.type==='bach'){ congratsText='🎓 Glückwunsch zum Bachelor!'; congratsTimer=120; spawnConfetti(); }
+        else if(!masterPassed){ masterPassed=true; congratsText='🏛️ Glückwunsch zum Master!'; congratsTimer=120; spawnConfetti();
+          setTimeout(()=>{state='ending';endingFrame=0;confetti=[];setTimeout(spawnConfetti,400);},2400); }
+      }
+    }
+    if(congratsTimer>0)congratsTimer--;
+    updateConfetti();
+    document.getElementById('score-display').textContent='Punkte: '+score;
+    document.getElementById('hi-display').textContent='Best: '+hiScore;
+  }
+  if(state==='dead'){deathFrame++;flashAlpha=Math.max(0,flashAlpha-0.05);}
+  if(state==='ending'){endingFrame++;updateConfetti();}
+}
+
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  drawBackground();
+  obstacles.forEach(o=>drawExam(o));
+  if(state==='dead') drawKathy(kathyDead.x,kathyDead.y,kathyDead.leg,true,deathFrame);
+  else               drawKathy(kathy.x,kathy.y,kathy.leg,false,0);
+  drawConfetti();
+  if(flashAlpha>0){ctx.fillStyle=`rgba(220,50,50,${flashAlpha})`;ctx.fillRect(0,0,W,H);}
+  if(state==='idle')                  drawStartScreen();
+  if(state==='dead'&&deathFrame>20)   drawDeadScreen();
+  if(congratsTimer>0)                 drawCongratsOverlay();
+  if(state==='ending')                drawEndingScreen();
+}
+
+function loop(){update();draw();requestAnimationFrame(loop);}
+loop();
+</script>
+</body>
+</html>
